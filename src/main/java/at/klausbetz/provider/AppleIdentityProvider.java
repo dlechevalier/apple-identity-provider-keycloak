@@ -252,7 +252,7 @@ public class AppleIdentityProvider extends OIDCIdentityProvider implements Socia
     }
 
     private boolean isValidSecret(String clientSecret) {
-        if (clientSecret != null && clientSecret.length() > 0) {
+        if (clientSecret != null && !clientSecret.isEmpty()) {
             try {
                 JWSInput jws = new JWSInput(clientSecret);
                 JsonWebToken token = jws.readJsonContent(JsonWebToken.class);
