@@ -295,6 +295,9 @@ public class AppleIdentityProvider extends OIDCIdentityProvider implements Socia
             if (appleUser.getLastName() != null && (context.getLastName() == null || context.getLastName().isBlank())) {
                 context.setLastName(appleUser.getLastName());
             }
+            if(appleUser.getEmail() != null && (context.getEmail() == null || context.getEmail().isBlank())) {
+                context.setEmail(appleUser.getEmail());
+            }
         } catch (Exception e) {
             // do nothing
         }
@@ -314,6 +317,10 @@ public class AppleIdentityProvider extends OIDCIdentityProvider implements Socia
             JsonNode lastNameNode = nameNode.get("lastName");
             if (lastNameNode != null) {
                 appleUser.setLastName(lastNameNode.asText());
+            }
+            JsonNode emailNode = profile.get("email");
+            if(emailNode != null) {
+                appleUser.setEmail(emailNode.asText());
             }
         }
 
