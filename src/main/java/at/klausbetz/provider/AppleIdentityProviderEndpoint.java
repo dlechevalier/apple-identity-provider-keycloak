@@ -79,10 +79,11 @@ public class AppleIdentityProviderEndpoint {
         try {
             if (authorizationCode != null) {
                 appleIdentityProvider.prepareClientSecret(appleIdentityProvider.getConfig().getClientId());
-                BrokeredIdentityContext federatedIdentity = appleIdentityProvider.sendTokenRequest(authorizationCode, appleIdentityProvider.getConfig().getClientId(), user, authSession, Urls.identityProviderAuthnResponse(context.getUri().getBaseUri(), appleIdentityProvider.getConfig().getAlias(), context.getRealm().getName()).toString());
+                BrokeredIdentityContext federatedIdentity = appleIdentityProvider.retryTokenRequest(authorizationCode, appleIdentityProvider.getConfig().getClientId(), user, authSession, Urls.identityProviderAuthnResponse(context.getUri().getBaseUri(), appleIdentityProvider.getConfig().getAlias(), context.getRealm().getName()).toString());
                 if (federatedIdentity != null) {
                     return callback.authenticated(federatedIdentity);
                 }
+                return callback.error(appleIdentityProvider.getConfig(), Messages.IDENTITY_PROVIDER_INVALID_RESPONSE);
             }
         } catch (WebApplicationException e) {
             return e.getResponse();
