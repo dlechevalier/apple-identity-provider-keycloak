@@ -5,7 +5,7 @@ plugins {
 
 group 'at.klausbetz'
 version '1.17.0'
-java.sourceCompatibility = JavaVersion.VERSION_17
+java.sourceCompatibility = JavaVersion.VERSION_21
 
 ext {
     keycloakVersion = '26.5.0'
@@ -30,6 +30,9 @@ dependencies {
 
 test {
     useJUnitPlatform()
+    testLogging {
+        events "passed", "skipped", "failed"
+    }
 }
 
 java {
