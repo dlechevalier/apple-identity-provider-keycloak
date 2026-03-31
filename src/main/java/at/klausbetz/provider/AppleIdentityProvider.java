@@ -318,10 +318,10 @@ public class AppleIdentityProvider extends OIDCIdentityProvider implements Socia
             if (lastNameNode != null) {
                 appleUser.setLastName(lastNameNode.asText());
             }
-            JsonNode emailNode = profile.get("email");
-            if(emailNode != null) {
-                appleUser.setEmail(emailNode.asText());
-            }
+        }
+        JsonNode emailNode = profile.get("email");
+        if (emailNode != null) {
+            appleUser.setEmail(emailNode.asText());
         }
 
         return appleUser;

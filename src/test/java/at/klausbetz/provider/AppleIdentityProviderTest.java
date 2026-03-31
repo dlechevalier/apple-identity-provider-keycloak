@@ -148,14 +148,13 @@ class AppleIdentityProviderTest {
         }
 
         @Test
-        void withEmailButNoName_emailIsNotParsed() throws Exception {
-            // This documents a known bug: email extraction is nested inside the nameNode != null block
+        void withEmailButNoName_emailIsParsed() throws Exception {
             String userJson = "{\"email\":\"john@example.com\"}";
             AppleUserRepresentation result = invokeParseUser(userJson);
 
             assertNull(result.getFirstName());
             assertNull(result.getLastName());
-            assertNull(result.getEmail()); // BUG: email is not parsed when name is absent
+            assertEquals("john@example.com", result.getEmail());
             assertNotNull(result.getProfile());
         }
 
