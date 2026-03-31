@@ -6,6 +6,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.keycloak.OAuth2Constants;
 import org.keycloak.broker.provider.BrokeredIdentityContext;
+import org.keycloak.broker.provider.IdentityBrokerException;
 import org.keycloak.events.Errors;
 import org.keycloak.events.EventBuilder;
 import org.keycloak.models.*;
@@ -464,6 +465,65 @@ class AppleIdentityProviderTest {
         }
     }
 
+    // ========== validateRedirectUri tests (via reflection) ==========
+
+    @Nested
+    class ValidateRedirectUriTests {
+
+        @Test
+        void validHttpsUri_doesNotThrow() {
+            assertDoesNotThrow(() -> invokeValidateRedirectUri("https://example.com/callback"));
+        }
+
+        @Test
+        void validHttpUri_doesNotThrow() {
+            assertDoesNotThrow(() -> invokeValidateRedirectUri("http://localhost:8080/callback"));
+        }
+
+        @Test
+        void relativeUri_throwsErrorResponseException() {
+            InvocationTargetException ex = assertThrows(InvocationTargetException.class,
+                    () -> invokeValidateRedirectUri("/relative/path"));
+            assertInstanceOf(ErrorResponseException.class, ex.getCause());
+        }
+
+        @Test
+        void malformedUri_throwsErrorResponseException() {
+            InvocationTargetException ex = assertThrows(InvocationTargetException.class,
+                    () -> invokeValidateRedirectUri("::not a uri::"));
+            assertInstanceOf(ErrorResponseException.class, ex.getCause());
+        }
+
+        @Test
+        void customScheme_throwsErrorResponseException() {
+            InvocationTargetException ex = assertThrows(InvocationTargetException.class,
+                    () -> invokeValidateRedirectUri("myapp://callback"));
+            assertInstanceOf(ErrorResponseException.class, ex.getCause());
+        }
+
+        @Test
+        void javascriptScheme_throwsErrorResponseException() {
+            InvocationTargetException ex = assertThrows(InvocationTargetException.class,
+                    () -> invokeValidateRedirectUri("javascript:alert(1)"));
+            assertInstanceOf(ErrorResponseException.class, ex.getCause());
+        }
+    }
+
+    // ========== generateJWS failure tests ==========
+
+    @Nested
+    class GenerateJwsTests {
+
+        @Test
+        void invalidP8Content_throwsIdentityBrokerException() throws Exception {
+            Method method = AppleIdentityProvider.class.getDeclaredMethod("generateJWS", String.class, String.class, String.class, String.class);
+            method.setAccessible(true);
+            InvocationTargetException ex = assertThrows(InvocationTargetException.class,
+                    () -> method.invoke(provider, "not-a-valid-p8-key", "KEY1234567", "TEAM12345", "com.example.app"));
+            assertInstanceOf(IdentityBrokerException.class, ex.getCause());
+        }
+    }
+
     // ========== Reflection helper methods ==========
 
     private AppleUserRepresentation invokeParseUser(String userJson) throws Exception {
@@ -488,6 +548,12 @@ class AppleIdentityProviderTest {
         Method method = AppleIdentityProvider.class.getDeclaredMethod("generateClientToken", String.class, String.class);
         method.setAccessible(true);
         return (JsonWebToken) method.invoke(provider, teamId, clientId);
+    }
+
+    private void invokeValidateRedirectUri(String uri) throws Exception {
+        Method method = AppleIdentityProvider.class.getDeclaredMethod("validateRedirectUri", String.class);
+        method.setAccessible(true);
+        method.invoke(provider, uri);
     }
 
     private void invokeAutoLinkIfPossible(BrokeredIdentityContext context) throws Exception {

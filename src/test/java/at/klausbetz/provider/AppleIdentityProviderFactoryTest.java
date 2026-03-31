@@ -90,4 +90,14 @@ class AppleIdentityProviderFactoryTest {
     void whenProviderIdConstant_thenEqualsApple() {
         assertEquals("apple", AppleIdentityProviderFactory.PROVIDER_ID);
     }
+
+    @Test
+    void whenGetConfigProperties_thenTokenExchangeAccountLinkingDefaultIsFalse() {
+        List<ProviderConfigProperty> properties = factory.getConfigProperties();
+        ProviderConfigProperty tokenExchange = properties.stream()
+                .filter(p -> "tokenExchangeAccountLinkingEnabled".equals(p.getName()))
+                .findFirst()
+                .orElseThrow();
+        assertEquals(Boolean.FALSE, tokenExchange.getDefaultValue());
+    }
 }
