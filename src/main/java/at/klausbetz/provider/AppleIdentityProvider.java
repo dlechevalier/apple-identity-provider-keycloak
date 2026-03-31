@@ -246,9 +246,8 @@ public class AppleIdentityProvider extends OIDCIdentityProvider implements Socia
                     .jsonContent(generateClientToken(teamId, clientId))
                     .sign(new ServerECDSASignatureSignerContext(keyWrapper));
         } catch (Exception e) {
-            logger.error("Unable to generate JWS", e);
+            throw new IdentityBrokerException("Unable to generate Apple client secret JWT", e);
         }
-        return null;
     }
 
     private static String sanitizeForLog(String input) {
