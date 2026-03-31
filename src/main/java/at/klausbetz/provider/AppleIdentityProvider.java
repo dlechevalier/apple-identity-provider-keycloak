@@ -49,6 +49,7 @@ public class AppleIdentityProvider extends OIDCIdentityProvider implements Socia
     private static final String JWKS_URL = "https://appleid.apple.com/auth/keys";
     private static final String ISSUER = "https://appleid.apple.com";
     static final String APPLE_AUTHZ_CODE = "apple-authz-code";
+    private static final long CLIENT_SECRET_EXPIRY_SECONDS = 86400L * 180;
 
     public AppleIdentityProvider(KeycloakSession session, AppleIdentityProviderConfig config) {
         super(session, config);
@@ -274,7 +275,7 @@ public class AppleIdentityProvider extends OIDCIdentityProvider implements Socia
         jwt.subject(clientId);
         jwt.audience(ISSUER);
         jwt.iat((long) Time.currentTime());
-        jwt.exp(jwt.getIat() + 86400 * 180);
+        jwt.exp(jwt.getIat() + CLIENT_SECRET_EXPIRY_SECONDS);
         return jwt;
     }
 
