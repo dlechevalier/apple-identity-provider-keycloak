@@ -187,7 +187,7 @@ public class AppleIdentityProvider extends OIDCIdentityProvider implements Socia
         SimpleHttp.Response response = generateTokenRequest(authorizationCode, clientId, redirectUri).asResponse();
 
         if (response.getStatus() > 299) {
-            logger.warn("Error response from apple: status=" + response.getStatus() + ", body=" + response.asString() + " Please consult the docs at https://github.com/klausbetz/apple-identity-provider-keycloak for troubleshooting");
+            logger.warn("Error response from apple: status=" + response.getStatus() + ", body=" + sanitizeForLog(response.asString()) + " Please consult the docs at https://github.com/klausbetz/apple-identity-provider-keycloak for troubleshooting");
             return null;
         }
 
@@ -249,6 +249,11 @@ public class AppleIdentityProvider extends OIDCIdentityProvider implements Socia
             logger.error("Unable to generate JWS", e);
         }
         return null;
+    }
+
+    private static String sanitizeForLog(String input) {
+        if (input == null) return null;
+        return input.replaceAll("[\r\n\t]", "_");
     }
 
     private boolean isValidSecret(String clientSecret) {

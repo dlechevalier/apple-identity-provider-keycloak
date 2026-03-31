@@ -65,7 +65,7 @@ public class AppleIdentityProviderEndpoint {
         var context = session.getContext();
 
         if (error != null) {
-            logger.warn(error + " for broker login " + appleIdentityProvider.getConfig().getProviderId());
+            logger.warn(sanitizeForLog(error) + " for broker login " + appleIdentityProvider.getConfig().getProviderId());
             if (error.equals(ACCESS_DENIED) || error.equals(USER_CANCELLED_AUTHORIZE)) {
                 sendErrorEvent();
                 return callback.cancelled(this.appleIdentityProvider.getConfig());
@@ -99,6 +99,11 @@ public class AppleIdentityProviderEndpoint {
     private Response errorIdentityProviderLogin(String message, Response.Status status) {
         sendErrorEvent();
         return ErrorPage.error(session, null, status, message);
+    }
+
+    private static String sanitizeForLog(String input) {
+        if (input == null) return null;
+        return input.replaceAll("[\r\n\t]", "_");
     }
 
     private void sendErrorEvent() {
