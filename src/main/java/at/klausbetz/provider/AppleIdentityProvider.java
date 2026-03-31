@@ -33,6 +33,8 @@ import org.keycloak.sessions.AuthenticationSessionModel;
 import org.keycloak.vault.VaultStringSecret;
 
 import java.io.IOException;
+import java.net.URI;
+import java.net.URISyntaxException;
 import java.security.KeyFactory;
 import java.security.PrivateKey;
 import java.security.spec.PKCS8EncodedKeySpec;
@@ -276,8 +278,26 @@ public class AppleIdentityProvider extends OIDCIdentityProvider implements Socia
         return jwt;
     }
 
+    private void validateRedirectUri(String uri) {
+        try {
+            URI parsed = new URI(uri);
+            if (!parsed.isAbsolute()) {
+                throw new ErrorResponseException(OAuthErrorException.INVALID_REQUEST, "app_redirect_uri must be an absolute URI", Response.Status.BAD_REQUEST);
+            }
+            String scheme = parsed.getScheme().toLowerCase();
+            if (!scheme.equals("https") && !scheme.equals("http")) {
+                throw new ErrorResponseException(OAuthErrorException.INVALID_REQUEST, "app_redirect_uri scheme not allowed", Response.Status.BAD_REQUEST);
+            }
+        } catch (URISyntaxException e) {
+            throw new ErrorResponseException(OAuthErrorException.INVALID_REQUEST, "app_redirect_uri is not a valid URI", Response.Status.BAD_REQUEST);
+        }
+    }
+
     private BrokeredIdentityContext exchangeAuthorizationCode(String authorizationCode, String userJson, String appIdentifier, String appRedirectUri) {
         String clientId = appIdentifier != null && !appIdentifier.isBlank() ? appIdentifier : getConfig().getClientId();
+        if (appRedirectUri != null) {
+            validateRedirectUri(appRedirectUri);
+        }
         String redirectUri = appRedirectUri != null ? appRedirectUri : Urls.identityProviderAuthnResponse(session.getContext().getUri().getBaseUri(), getConfig().getAlias(), session.getContext().getRealm().getName()).toString();
         try {
             prepareClientSecret(clientId);
