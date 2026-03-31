@@ -168,7 +168,7 @@ public class AppleIdentityProvider extends OIDCIdentityProvider implements Socia
             return context;
         } catch (IOException e) {
             logger.debug("Unable to extract identity from identity token", e);
-            event.detail(Details.REASON, "Unable to extract identity from identity token: " + e.getMessage());
+            event.detail(Details.REASON, "Unable to extract identity from identity token");
             event.error(Errors.INVALID_TOKEN);
             throw new ErrorResponseException(OAuthErrorException.INVALID_TOKEN, "invalid token", Response.Status.BAD_REQUEST);
         }
