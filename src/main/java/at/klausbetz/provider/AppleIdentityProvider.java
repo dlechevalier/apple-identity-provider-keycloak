@@ -231,10 +231,8 @@ public class AppleIdentityProvider extends OIDCIdentityProvider implements Socia
 
             PKCS8EncodedKeySpec keySpecPKCS8 = new PKCS8EncodedKeySpec(Base64.decode(
                     p8Content
-                            .replace("-----BEGIN PRIVATE KEY-----", "")
-                            .replace("-----END PRIVATE KEY-----", "")
-                            .replace("\\n", "")
-                            .replace(" ", "")
+                            .replaceAll("-----[^-]+-----", "")
+                            .replaceAll("\\s+", "")
             ));
             PrivateKey privateKey = kf.generatePrivate(keySpecPKCS8);
             KeyWrapper keyWrapper = new KeyWrapper();
