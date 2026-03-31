@@ -70,7 +70,7 @@ public class AppleIdentityProvider extends OIDCIdentityProvider implements Socia
 
     @Override
     protected String getDefaultScopes() {
-        return "name%20email";
+        return "name email";
     }
 
     @Override

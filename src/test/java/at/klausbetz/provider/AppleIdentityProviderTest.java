@@ -94,7 +94,7 @@ class AppleIdentityProviderTest {
     void getDefaultScopes_returnsNameAndEmail() {
         // The parent constructor sets defaultScope from getDefaultScopes() and prepends "openid"
         String scope = config.getDefaultScope();
-        assertTrue(scope.contains("name%20email"));
+        assertTrue(scope.contains("name email"));
         assertTrue(scope.contains("openid"));
     }
 
