@@ -172,7 +172,7 @@ public class AppleIdentityProvider extends OIDCIdentityProvider implements Socia
         }
     }
 
-    public void prepareClientSecret(String clientId) {
+    public synchronized void prepareClientSecret(String clientId) {
         if (!isValidSecret(getConfig().getClientSecret())) {
             getConfig().setClientSecret(generateJWS(
                     getConfig().getClientSecret(),
