@@ -321,7 +321,7 @@ public class AppleIdentityProvider extends OIDCIdentityProvider implements Socia
                 context.setEmail(appleUser.getEmail());
             }
         } catch (Exception e) {
-            // do nothing
+            logger.debug("Failed to handle user JSON from Apple", e);
         }
         return context;
     }
