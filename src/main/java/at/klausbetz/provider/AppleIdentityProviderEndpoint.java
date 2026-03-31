@@ -64,8 +64,15 @@ public class AppleIdentityProviderEndpoint {
         session.getContext().setAuthenticationSession(authSession);
         var context = session.getContext();
 
+        logger.debugf("[tab=%s client=%s] Apple callback received: code=%s error=%s hasUser=%s",
+                tabId, clientId,
+                authorizationCode != null ? "present" : "absent",
+                sanitizeForLog(error),
+                user != null ? "yes" : "no");
+
         if (error != null) {
-            logger.warn(sanitizeForLog(error) + " for broker login " + appleIdentityProvider.getConfig().getProviderId());
+            logger.warnf("[tab=%s client=%s] Apple returned error for broker login %s: %s",
+                    tabId, clientId, appleIdentityProvider.getConfig().getProviderId(), sanitizeForLog(error));
             if (error.equals(ACCESS_DENIED) || error.equals(USER_CANCELLED_AUTHORIZE)) {
                 sendErrorEvent();
                 return callback.cancelled(this.appleIdentityProvider.getConfig());
@@ -81,13 +88,17 @@ public class AppleIdentityProviderEndpoint {
                 appleIdentityProvider.prepareClientSecret(appleIdentityProvider.getConfig().getClientId());
                 BrokeredIdentityContext federatedIdentity = appleIdentityProvider.sendTokenRequest(authorizationCode, appleIdentityProvider.getConfig().getClientId(), user, authSession, Urls.identityProviderAuthnResponse(context.getUri().getBaseUri(), appleIdentityProvider.getConfig().getAlias(), context.getRealm().getName()).toString());
                 if (federatedIdentity != null) {
+                    logger.infof("[tab=%s client=%s] Apple authentication succeeded for subject=%s",
+                            tabId, clientId, federatedIdentity.getId());
                     return callback.authenticated(federatedIdentity);
                 }
+            } else {
+                logger.debugf("[tab=%s client=%s] No authorization code received, skipping token exchange", tabId, clientId);
             }
         } catch (WebApplicationException e) {
             return e.getResponse();
         } catch (Exception e) {
-            logger.error("Failed to complete apple identity provider oauth callback", e);
+            logger.errorf(e, "[tab=%s client=%s] Failed to complete Apple identity provider OAuth callback", tabId, clientId);
         }
         return errorIdentityProviderLogin(Messages.IDENTITY_PROVIDER_UNEXPECTED_ERROR);
     }
