@@ -33,6 +33,8 @@ import org.keycloak.sessions.AuthenticationSessionModel;
 import org.keycloak.vault.VaultStringSecret;
 
 import java.io.IOException;
+import java.net.URI;
+import java.net.URISyntaxException;
 import java.security.KeyFactory;
 import java.security.PrivateKey;
 import java.security.spec.PKCS8EncodedKeySpec;
@@ -47,6 +49,7 @@ public class AppleIdentityProvider extends OIDCIdentityProvider implements Socia
     private static final String JWKS_URL = "https://appleid.apple.com/auth/keys";
     private static final String ISSUER = "https://appleid.apple.com";
     static final String APPLE_AUTHZ_CODE = "apple-authz-code";
+    private static final long CLIENT_SECRET_EXPIRY_SECONDS = 86400L * 180;
 
     public AppleIdentityProvider(KeycloakSession session, AppleIdentityProviderConfig config) {
         super(session, config);
@@ -67,7 +70,7 @@ public class AppleIdentityProvider extends OIDCIdentityProvider implements Socia
 
     @Override
     protected String getDefaultScopes() {
-        return "name%20email";
+        return "name email";
     }
 
     @Override
@@ -84,13 +87,18 @@ public class AppleIdentityProvider extends OIDCIdentityProvider implements Socia
             throw new ErrorResponseException(OAuthErrorException.INVALID_TOKEN, "token not set", Response.Status.BAD_REQUEST);
         }
 
+        String tokenType = exchangeParams.getSubjectTokenType();
+        String appIdentifier = exchangeParams.getAppIdentifier() != null ? exchangeParams.getAppIdentifier() : getConfig().getClientId();
+        logger.debugf("[app=%s] Token exchange requested with type=%s hasUserJson=%s",
+                appIdentifier, tokenType, exchangeParams.getUserJson() != null ? "yes" : "no");
+
         BrokeredIdentityContext context;
-        if (OAuth2Constants.ID_TOKEN_TYPE.equals(exchangeParams.getSubjectTokenType())) {
+        if (OAuth2Constants.ID_TOKEN_TYPE.equals(tokenType)) {
             context = validateAppleIdToken(event, exchangeParams.getSubjectToken());
             if (exchangeParams.getUserJson() != null) {
                 context = handleUserJson(context, exchangeParams.getUserJson());
             }
-        } else if (APPLE_AUTHZ_CODE.equals(exchangeParams.getSubjectTokenType())) {
+        } else if (APPLE_AUTHZ_CODE.equals(tokenType)) {
             context = exchangeAuthorizationCode(exchangeParams.getSubjectToken(), exchangeParams.getUserJson(), exchangeParams.getAppIdentifier(), exchangeParams.getAppRedirectUri());
         } else {
             event.detail(Details.REASON, OAuth2Constants.SUBJECT_TOKEN_TYPE + " invalid");
@@ -98,8 +106,11 @@ public class AppleIdentityProvider extends OIDCIdentityProvider implements Socia
             throw new ErrorResponseException(OAuthErrorException.INVALID_TOKEN, "invalid token type", Response.Status.BAD_REQUEST);
         }
 
-        if (context != null && getConfig().isTokenExchangeAccountLinkingEnabled()) {
-            autoLinkIfPossible(context);
+        if (context != null) {
+            logger.infof("[app=%s] Token exchange succeeded for subject=%s", appIdentifier, context.getId());
+            if (getConfig().isTokenExchangeAccountLinkingEnabled()) {
+                autoLinkIfPossible(context);
+            }
         }
         return context;
     }
@@ -108,11 +119,13 @@ public class AppleIdentityProvider extends OIDCIdentityProvider implements Socia
         RealmModel realm = this.session.getContext().getRealm();
         String email = context.getEmail();
         if (email == null || email.isBlank()) {
+            logger.debugf("Auto-link skipped for subject=%s: no email in context", context.getId());
             return;
         }
 
         UserModel existing = this.session.users().getUserByEmail(realm, email);
         if (existing == null) {
+            logger.debugf("Auto-link skipped for subject=%s: no existing user with email", context.getId());
             return;
         }
 
@@ -120,11 +133,13 @@ public class AppleIdentityProvider extends OIDCIdentityProvider implements Socia
 
         FederatedIdentityModel existingLink = this.session.users().getFederatedIdentity(realm, existing, providerAlias);
         if (existingLink != null) {
-            return; // The keycloak user has already been linked to this provider; can be the same Apple user or not; either way we're done
+            logger.debugf("Auto-link skipped for subject=%s: user already linked to provider=%s", context.getId(), providerAlias);
+            return;
         }
 
         FederatedIdentityModel newLink = new FederatedIdentityModel(providerAlias, context.getId(), context.getUsername());
         this.session.users().addFederatedIdentity(realm, existing, newLink);
+        logger.infof("Auto-linked Apple subject=%s to existing Keycloak user via provider=%s", context.getId(), providerAlias);
     }
 
     // NOTE: slightly modified version of OIDCIdentityProvider.validateJWT
@@ -166,13 +181,13 @@ public class AppleIdentityProvider extends OIDCIdentityProvider implements Socia
             return context;
         } catch (IOException e) {
             logger.debug("Unable to extract identity from identity token", e);
-            event.detail(Details.REASON, "Unable to extract identity from identity token: " + e.getMessage());
+            event.detail(Details.REASON, "Unable to extract identity from identity token");
             event.error(Errors.INVALID_TOKEN);
             throw new ErrorResponseException(OAuthErrorException.INVALID_TOKEN, "invalid token", Response.Status.BAD_REQUEST);
         }
     }
 
-    public void prepareClientSecret(String clientId) {
+    public synchronized void prepareClientSecret(String clientId) {
         if (!isValidSecret(getConfig().getClientSecret())) {
             getConfig().setClientSecret(generateJWS(
                     getConfig().getClientSecret(),
@@ -187,7 +202,7 @@ public class AppleIdentityProvider extends OIDCIdentityProvider implements Socia
         SimpleHttp.Response response = generateTokenRequest(authorizationCode, clientId, redirectUri).asResponse();
 
         if (response.getStatus() > 299) {
-            logger.warn("Error response from apple: status=" + response.getStatus() + ", body=" + response.asString() + " Please consult the docs at https://github.com/klausbetz/apple-identity-provider-keycloak for troubleshooting");
+            logger.warn("Error response from apple: status=" + response.getStatus() + ", body=" + sanitizeForLog(response.asString()) + " Please consult the docs at https://github.com/klausbetz/apple-identity-provider-keycloak for troubleshooting");
             return null;
         }
 
@@ -231,10 +246,8 @@ public class AppleIdentityProvider extends OIDCIdentityProvider implements Socia
 
             PKCS8EncodedKeySpec keySpecPKCS8 = new PKCS8EncodedKeySpec(Base64.decode(
                     p8Content
-                            .replace("-----BEGIN PRIVATE KEY-----", "")
-                            .replace("-----END PRIVATE KEY-----", "")
-                            .replace("\\n", "")
-                            .replace(" ", "")
+                            .replaceAll("-----[^-]+-----", "")
+                            .replaceAll("\\s+", "")
             ));
             PrivateKey privateKey = kf.generatePrivate(keySpecPKCS8);
             KeyWrapper keyWrapper = new KeyWrapper();
@@ -246,9 +259,13 @@ public class AppleIdentityProvider extends OIDCIdentityProvider implements Socia
                     .jsonContent(generateClientToken(teamId, clientId))
                     .sign(new ServerECDSASignatureSignerContext(keyWrapper));
         } catch (Exception e) {
-            logger.error("Unable to generate JWS", e);
+            throw new IdentityBrokerException("Unable to generate Apple client secret JWT", e);
         }
-        return null;
+    }
+
+    private static String sanitizeForLog(String input) {
+        if (input == null) return null;
+        return input.replaceAll("[\r\n\t]", "_");
     }
 
     private boolean isValidSecret(String clientSecret) {
@@ -270,18 +287,41 @@ public class AppleIdentityProvider extends OIDCIdentityProvider implements Socia
         jwt.subject(clientId);
         jwt.audience(ISSUER);
         jwt.iat((long) Time.currentTime());
-        jwt.exp(jwt.getIat() + 86400 * 180);
+        jwt.exp(jwt.getIat() + CLIENT_SECRET_EXPIRY_SECONDS);
         return jwt;
+    }
+
+    private void validateRedirectUri(String uri) {
+        try {
+            URI parsed = new URI(uri);
+            if (!parsed.isAbsolute()) {
+                throw new ErrorResponseException(OAuthErrorException.INVALID_REQUEST, "app_redirect_uri must be an absolute URI", Response.Status.BAD_REQUEST);
+            }
+            String scheme = parsed.getScheme().toLowerCase();
+            if (!scheme.equals("https") && !scheme.equals("http")) {
+                throw new ErrorResponseException(OAuthErrorException.INVALID_REQUEST, "app_redirect_uri scheme not allowed", Response.Status.BAD_REQUEST);
+            }
+        } catch (URISyntaxException e) {
+            throw new ErrorResponseException(OAuthErrorException.INVALID_REQUEST, "app_redirect_uri is not a valid URI", Response.Status.BAD_REQUEST);
+        }
     }
 
     private BrokeredIdentityContext exchangeAuthorizationCode(String authorizationCode, String userJson, String appIdentifier, String appRedirectUri) {
         String clientId = appIdentifier != null && !appIdentifier.isBlank() ? appIdentifier : getConfig().getClientId();
+        if (appRedirectUri != null) {
+            validateRedirectUri(appRedirectUri);
+        }
         String redirectUri = appRedirectUri != null ? appRedirectUri : Urls.identityProviderAuthnResponse(session.getContext().getUri().getBaseUri(), getConfig().getAlias(), session.getContext().getRealm().getName()).toString();
+        logger.debugf("[app=%s] Exchanging Apple authorization code, redirectUri=%s", clientId, redirectUri);
         try {
             prepareClientSecret(clientId);
-            return sendTokenRequest(authorizationCode, clientId, userJson, null, redirectUri);
+            BrokeredIdentityContext context = sendTokenRequest(authorizationCode, clientId, userJson, null, redirectUri);
+            if (context == null) {
+                logger.warnf("[app=%s] Authorization code exchange returned no identity context", clientId);
+            }
+            return context;
         } catch (IOException e) {
-            logger.warn("Error exchanging apple authorization_code. clientId=" + clientId, e);
+            logger.warnf(e, "[app=%s] Error exchanging Apple authorization code", clientId);
             return null;
         }
     }
@@ -299,7 +339,7 @@ public class AppleIdentityProvider extends OIDCIdentityProvider implements Socia
                 context.setEmail(appleUser.getEmail());
             }
         } catch (Exception e) {
-            // do nothing
+            logger.debug("Failed to handle user JSON from Apple", e);
         }
         return context;
     }
@@ -318,10 +358,10 @@ public class AppleIdentityProvider extends OIDCIdentityProvider implements Socia
             if (lastNameNode != null) {
                 appleUser.setLastName(lastNameNode.asText());
             }
-            JsonNode emailNode = profile.get("email");
-            if(emailNode != null) {
-                appleUser.setEmail(emailNode.asText());
-            }
+        }
+        JsonNode emailNode = profile.get("email");
+        if (emailNode != null) {
+            appleUser.setEmail(emailNode.asText());
         }
 
         return appleUser;
