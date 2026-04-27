@@ -4,6 +4,12 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import jakarta.ws.rs.core.MultivaluedMap;
 import jakarta.ws.rs.core.Response;
+import java.io.IOException;
+import java.net.URI;
+import java.net.URISyntaxException;
+import java.security.KeyFactory;
+import java.security.PrivateKey;
+import java.security.spec.PKCS8EncodedKeySpec;
 import org.jboss.logging.Logger;
 import org.keycloak.OAuth2Constants;
 import org.keycloak.OAuthErrorException;
@@ -32,338 +38,400 @@ import org.keycloak.services.Urls;
 import org.keycloak.sessions.AuthenticationSessionModel;
 import org.keycloak.vault.VaultStringSecret;
 
-import java.io.IOException;
-import java.net.URI;
-import java.net.URISyntaxException;
-import java.security.KeyFactory;
-import java.security.PrivateKey;
-import java.security.spec.PKCS8EncodedKeySpec;
+public class AppleIdentityProvider extends OIDCIdentityProvider
+    implements SocialIdentityProvider<OIDCIdentityProviderConfig> {
 
-public class AppleIdentityProvider extends OIDCIdentityProvider implements SocialIdentityProvider<OIDCIdentityProviderConfig> {
+  public static final String OAUTH2_PARAMETER_CODE = "code";
 
-    public static final String OAUTH2_PARAMETER_CODE = "code";
+  private static final Logger logger = Logger.getLogger(AppleIdentityProvider.class);
+  private static final String AUTH_URL =
+      "https://appleid.apple.com/auth/authorize?response_mode=form_post";
+  private static final String TOKEN_URL = "https://appleid.apple.com/auth/token";
+  private static final String JWKS_URL = "https://appleid.apple.com/auth/keys";
+  private static final String ISSUER = "https://appleid.apple.com";
+  static final String APPLE_AUTHZ_CODE = "apple-authz-code";
+  private static final long CLIENT_SECRET_EXPIRY_SECONDS = 86400L * 180;
 
-    private static final Logger logger = Logger.getLogger(AppleIdentityProvider.class);
-    private static final String AUTH_URL = "https://appleid.apple.com/auth/authorize?response_mode=form_post";
-    private static final String TOKEN_URL = "https://appleid.apple.com/auth/token";
-    private static final String JWKS_URL = "https://appleid.apple.com/auth/keys";
-    private static final String ISSUER = "https://appleid.apple.com";
-    static final String APPLE_AUTHZ_CODE = "apple-authz-code";
-    private static final long CLIENT_SECRET_EXPIRY_SECONDS = 86400L * 180;
+  public AppleIdentityProvider(KeycloakSession session, AppleIdentityProviderConfig config) {
+    super(session, config);
 
-    public AppleIdentityProvider(KeycloakSession session, AppleIdentityProviderConfig config) {
-        super(session, config);
+    config.setAuthorizationUrl(AUTH_URL);
+    config.setTokenUrl(TOKEN_URL);
+    config.setJwksUrl(JWKS_URL);
+    config.setValidateSignature(true);
+    config.setUseJwksUrl(true);
+    config.setClientAuthMethod(OIDCLoginProtocol.CLIENT_SECRET_POST);
+    config.setIssuer(ISSUER);
+  }
 
-        config.setAuthorizationUrl(AUTH_URL);
-        config.setTokenUrl(TOKEN_URL);
-        config.setJwksUrl(JWKS_URL);
-        config.setValidateSignature(true);
-        config.setUseJwksUrl(true);
-        config.setClientAuthMethod(OIDCLoginProtocol.CLIENT_SECRET_POST);
-        config.setIssuer(ISSUER);
+  @Override
+  public Object callback(RealmModel realm, AuthenticationCallback callback, EventBuilder event) {
+    return new AppleIdentityProviderEndpoint(this, realm, callback, event, session);
+  }
+
+  @Override
+  protected String getDefaultScopes() {
+    return "name email";
+  }
+
+  @Override
+  public AppleIdentityProviderConfig getConfig() {
+    return (AppleIdentityProviderConfig) super.getConfig();
+  }
+
+  @Override
+  protected BrokeredIdentityContext exchangeExternalTokenV1Impl(
+      EventBuilder event, MultivaluedMap<String, String> params) {
+    TokenExchangeParams exchangeParams = new TokenExchangeParams(params);
+    if (exchangeParams.getSubjectToken() == null) {
+      event.detail(Details.REASON, OAuth2Constants.SUBJECT_TOKEN + " param unset");
+      event.error(Errors.INVALID_TOKEN);
+      throw new ErrorResponseException(
+          OAuthErrorException.INVALID_TOKEN, "token not set", Response.Status.BAD_REQUEST);
     }
 
-    @Override
-    public Object callback(RealmModel realm, AuthenticationCallback callback, EventBuilder event) {
-        return new AppleIdentityProviderEndpoint(this, realm, callback, event, session);
+    String tokenType = exchangeParams.getSubjectTokenType();
+    String appIdentifier =
+        exchangeParams.getAppIdentifier() != null
+            ? exchangeParams.getAppIdentifier()
+            : getConfig().getClientId();
+    logger.debugf(
+        "[app=%s] Token exchange requested with type=%s hasUserJson=%s",
+        appIdentifier, tokenType, exchangeParams.getUserJson() != null ? "yes" : "no");
+
+    BrokeredIdentityContext context;
+    if (OAuth2Constants.ID_TOKEN_TYPE.equals(tokenType)) {
+      context = validateAppleIdToken(event, exchangeParams.getSubjectToken());
+      if (exchangeParams.getUserJson() != null) {
+        context = handleUserJson(context, exchangeParams.getUserJson());
+      }
+    } else if (APPLE_AUTHZ_CODE.equals(tokenType)) {
+      context =
+          exchangeAuthorizationCode(
+              exchangeParams.getSubjectToken(),
+              exchangeParams.getUserJson(),
+              exchangeParams.getAppIdentifier(),
+              exchangeParams.getAppRedirectUri());
+    } else {
+      event.detail(Details.REASON, OAuth2Constants.SUBJECT_TOKEN_TYPE + " invalid");
+      event.error(Errors.INVALID_TOKEN_TYPE);
+      throw new ErrorResponseException(
+          OAuthErrorException.INVALID_TOKEN, "invalid token type", Response.Status.BAD_REQUEST);
     }
 
-    @Override
-    protected String getDefaultScopes() {
-        return "name email";
+    if (context != null) {
+      logger.infof(
+          "[app=%s] Token exchange succeeded for subject=%s", appIdentifier, context.getId());
+      if (getConfig().isTokenExchangeAccountLinkingEnabled()) {
+        autoLinkIfPossible(context);
+      }
+    }
+    return context;
+  }
+
+  private void autoLinkIfPossible(BrokeredIdentityContext context) {
+    RealmModel realm = this.session.getContext().getRealm();
+    String email = context.getEmail();
+    if (email == null || email.isBlank()) {
+      logger.debugf("Auto-link skipped for subject=%s: no email in context", context.getId());
+      return;
     }
 
-    @Override
-    public AppleIdentityProviderConfig getConfig() {
-        return (AppleIdentityProviderConfig) super.getConfig();
+    UserModel existing = this.session.users().getUserByEmail(realm, email);
+    if (existing == null) {
+      logger.debugf(
+          "Auto-link skipped for subject=%s: no existing user with email", context.getId());
+      return;
     }
 
-    @Override
-    protected BrokeredIdentityContext exchangeExternalTokenV1Impl(EventBuilder event, MultivaluedMap<String, String> params) {
-        TokenExchangeParams exchangeParams = new TokenExchangeParams(params);
-        if (exchangeParams.getSubjectToken() == null) {
-            event.detail(Details.REASON, OAuth2Constants.SUBJECT_TOKEN + " param unset");
-            event.error(Errors.INVALID_TOKEN);
-            throw new ErrorResponseException(OAuthErrorException.INVALID_TOKEN, "token not set", Response.Status.BAD_REQUEST);
-        }
+    String providerAlias = getConfig().getAlias();
 
-        String tokenType = exchangeParams.getSubjectTokenType();
-        String appIdentifier = exchangeParams.getAppIdentifier() != null ? exchangeParams.getAppIdentifier() : getConfig().getClientId();
-        logger.debugf("[app=%s] Token exchange requested with type=%s hasUserJson=%s",
-                appIdentifier, tokenType, exchangeParams.getUserJson() != null ? "yes" : "no");
-
-        BrokeredIdentityContext context;
-        if (OAuth2Constants.ID_TOKEN_TYPE.equals(tokenType)) {
-            context = validateAppleIdToken(event, exchangeParams.getSubjectToken());
-            if (exchangeParams.getUserJson() != null) {
-                context = handleUserJson(context, exchangeParams.getUserJson());
-            }
-        } else if (APPLE_AUTHZ_CODE.equals(tokenType)) {
-            context = exchangeAuthorizationCode(exchangeParams.getSubjectToken(), exchangeParams.getUserJson(), exchangeParams.getAppIdentifier(), exchangeParams.getAppRedirectUri());
-        } else {
-            event.detail(Details.REASON, OAuth2Constants.SUBJECT_TOKEN_TYPE + " invalid");
-            event.error(Errors.INVALID_TOKEN_TYPE);
-            throw new ErrorResponseException(OAuthErrorException.INVALID_TOKEN, "invalid token type", Response.Status.BAD_REQUEST);
-        }
-
-        if (context != null) {
-            logger.infof("[app=%s] Token exchange succeeded for subject=%s", appIdentifier, context.getId());
-            if (getConfig().isTokenExchangeAccountLinkingEnabled()) {
-                autoLinkIfPossible(context);
-            }
-        }
-        return context;
+    FederatedIdentityModel existingLink =
+        this.session.users().getFederatedIdentity(realm, existing, providerAlias);
+    if (existingLink != null) {
+      logger.debugf(
+          "Auto-link skipped for subject=%s: user already linked to provider=%s",
+          context.getId(), providerAlias);
+      return;
     }
 
-    private void autoLinkIfPossible(BrokeredIdentityContext context) {
-        RealmModel realm = this.session.getContext().getRealm();
-        String email = context.getEmail();
-        if (email == null || email.isBlank()) {
-            logger.debugf("Auto-link skipped for subject=%s: no email in context", context.getId());
-            return;
-        }
+    FederatedIdentityModel newLink =
+        new FederatedIdentityModel(providerAlias, context.getId(), context.getUsername());
+    this.session.users().addFederatedIdentity(realm, existing, newLink);
+    logger.infof(
+        "Auto-linked Apple subject=%s to existing Keycloak user via provider=%s",
+        context.getId(), providerAlias);
+  }
 
-        UserModel existing = this.session.users().getUserByEmail(realm, email);
-        if (existing == null) {
-            logger.debugf("Auto-link skipped for subject=%s: no existing user with email", context.getId());
-            return;
-        }
-
-        String providerAlias = getConfig().getAlias();
-
-        FederatedIdentityModel existingLink = this.session.users().getFederatedIdentity(realm, existing, providerAlias);
-        if (existingLink != null) {
-            logger.debugf("Auto-link skipped for subject=%s: user already linked to provider=%s", context.getId(), providerAlias);
-            return;
-        }
-
-        FederatedIdentityModel newLink = new FederatedIdentityModel(providerAlias, context.getId(), context.getUsername());
-        this.session.users().addFederatedIdentity(realm, existing, newLink);
-        logger.infof("Auto-linked Apple subject=%s to existing Keycloak user via provider=%s", context.getId(), providerAlias);
+  // NOTE: slightly modified version of OIDCIdentityProvider.validateJWT
+  private BrokeredIdentityContext validateAppleIdToken(EventBuilder event, String subjectToken) {
+    event.detail("validation_method", "signature");
+    if (getConfig().isUseJwksUrl()) {
+      if (getConfig().getJwksUrl() == null) {
+        event.detail(Details.REASON, "jwks url unset");
+        event.error(Errors.INVALID_CONFIG);
+        throw new ErrorResponseException(
+            Errors.INVALID_CONFIG, "Invalid server config", Response.Status.BAD_REQUEST);
+      }
+    } else if (getConfig().getPublicKeySignatureVerifier() == null) {
+      event.detail(Details.REASON, "public key unset");
+      event.error(Errors.INVALID_CONFIG);
+      throw new ErrorResponseException(
+          Errors.INVALID_CONFIG, "Invalid server config", Response.Status.BAD_REQUEST);
     }
 
-    // NOTE: slightly modified version of OIDCIdentityProvider.validateJWT
-    private BrokeredIdentityContext validateAppleIdToken(EventBuilder event, String subjectToken) {
-        event.detail("validation_method", "signature");
-        if (getConfig().isUseJwksUrl()) {
-            if (getConfig().getJwksUrl() == null) {
-                event.detail(Details.REASON, "jwks url unset");
-                event.error(Errors.INVALID_CONFIG);
-                throw new ErrorResponseException(Errors.INVALID_CONFIG, "Invalid server config", Response.Status.BAD_REQUEST);
-            }
-        } else if (getConfig().getPublicKeySignatureVerifier() == null) {
-            event.detail(Details.REASON, "public key unset");
-            event.error(Errors.INVALID_CONFIG);
-            throw new ErrorResponseException(Errors.INVALID_CONFIG, "Invalid server config", Response.Status.BAD_REQUEST);
-        }
-
-        JsonWebToken parsedToken;
-        try {
-            parsedToken = validateToken(subjectToken, true);
-        } catch (IdentityBrokerException e) {
-            logger.debug("Unable to validate token for exchange", e);
-            event.detail(Details.REASON, "token validation failure");
-            event.error(Errors.INVALID_TOKEN);
-            throw new ErrorResponseException(OAuthErrorException.INVALID_TOKEN, "invalid token", Response.Status.BAD_REQUEST);
-        }
-
-        try {
-            BrokeredIdentityContext context = extractIdentity(null, null, parsedToken);
-            if (context == null) {
-                event.detail(Details.REASON, "Failed to extract identity from token");
-                event.error(Errors.INVALID_TOKEN);
-                throw new ErrorResponseException(OAuthErrorException.INVALID_TOKEN, "invalid token", Response.Status.BAD_REQUEST);
-            }
-
-            context.getContextData().put(VALIDATED_ID_TOKEN, parsedToken);
-            context.getContextData().put(EXCHANGE_PROVIDER, getConfig().getAlias());
-            context.setIdp(this);
-            return context;
-        } catch (IOException e) {
-            logger.debug("Unable to extract identity from identity token", e);
-            event.detail(Details.REASON, "Unable to extract identity from identity token");
-            event.error(Errors.INVALID_TOKEN);
-            throw new ErrorResponseException(OAuthErrorException.INVALID_TOKEN, "invalid token", Response.Status.BAD_REQUEST);
-        }
+    JsonWebToken parsedToken;
+    try {
+      parsedToken = validateToken(subjectToken, true);
+    } catch (IdentityBrokerException e) {
+      logger.debug("Unable to validate token for exchange", e);
+      event.detail(Details.REASON, "token validation failure");
+      event.error(Errors.INVALID_TOKEN);
+      throw new ErrorResponseException(
+          OAuthErrorException.INVALID_TOKEN, "invalid token", Response.Status.BAD_REQUEST);
     }
 
-    public synchronized void prepareClientSecret(String clientId) {
-        if (!isValidSecret(getConfig().getClientSecret())) {
-            getConfig().setClientSecret(generateJWS(
-                    getConfig().getClientSecret(),
-                    getConfig().getKeyId(),
-                    getConfig().getTeamId(),
-                    clientId)
-            );
-        }
+    try {
+      BrokeredIdentityContext context = extractIdentity(null, null, parsedToken);
+      if (context == null) {
+        event.detail(Details.REASON, "Failed to extract identity from token");
+        event.error(Errors.INVALID_TOKEN);
+        throw new ErrorResponseException(
+            OAuthErrorException.INVALID_TOKEN, "invalid token", Response.Status.BAD_REQUEST);
+      }
+
+      context.getContextData().put(VALIDATED_ID_TOKEN, parsedToken);
+      context.getContextData().put(EXCHANGE_PROVIDER, getConfig().getAlias());
+      context.setIdp(this);
+      return context;
+    } catch (IOException e) {
+      logger.debug("Unable to extract identity from identity token", e);
+      event.detail(Details.REASON, "Unable to extract identity from identity token");
+      event.error(Errors.INVALID_TOKEN);
+      throw new ErrorResponseException(
+          OAuthErrorException.INVALID_TOKEN, "invalid token", Response.Status.BAD_REQUEST);
+    }
+  }
+
+  public synchronized void prepareClientSecret(String clientId) {
+    if (!isValidSecret(getConfig().getClientSecret())) {
+      getConfig()
+          .setClientSecret(
+              generateJWS(
+                  getConfig().getClientSecret(),
+                  getConfig().getKeyId(),
+                  getConfig().getTeamId(),
+                  clientId));
+    }
+  }
+
+  public BrokeredIdentityContext sendTokenRequest(
+      String authorizationCode,
+      String clientId,
+      String userDataJson,
+      AuthenticationSessionModel authSession,
+      String redirectUri)
+      throws IOException {
+    SimpleHttp.Response response =
+        generateTokenRequest(authorizationCode, clientId, redirectUri).asResponse();
+
+    if (response.getStatus() > 299) {
+      logger.warn(
+          "Error response from apple: status="
+              + response.getStatus()
+              + ", body="
+              + sanitizeForLog(response.asString())
+              + " Please consult the docs at https://github.com/klausbetz/apple-identity-provider-keycloak for troubleshooting");
+      return null;
     }
 
-    public BrokeredIdentityContext sendTokenRequest(String authorizationCode, String clientId, String userDataJson, AuthenticationSessionModel authSession, String redirectUri) throws IOException {
-        SimpleHttp.Response response = generateTokenRequest(authorizationCode, clientId, redirectUri).asResponse();
+    BrokeredIdentityContext federatedIdentity =
+        getFederatedIdentity(userDataJson, response.asString());
+    federatedIdentity.setIdp(AppleIdentityProvider.this);
+    federatedIdentity.setAuthenticationSession(authSession);
+    return federatedIdentity;
+  }
 
-        if (response.getStatus() > 299) {
-            logger.warn("Error response from apple: status=" + response.getStatus() + ", body=" + sanitizeForLog(response.asString()) + " Please consult the docs at https://github.com/klausbetz/apple-identity-provider-keycloak for troubleshooting");
-            return null;
-        }
+  public BrokeredIdentityContext getFederatedIdentity(String userData, String response)
+      throws JsonProcessingException {
+    BrokeredIdentityContext user = AppleIdentityProvider.this.getFederatedIdentity(response);
 
-        BrokeredIdentityContext federatedIdentity = getFederatedIdentity(userDataJson, response.asString());
-        federatedIdentity.setIdp(AppleIdentityProvider.this);
-        federatedIdentity.setAuthenticationSession(authSession);
-        return federatedIdentity;
+    if (userData != null) {
+      AppleUserRepresentation appleUser = parseUser(userData);
+      user.setFirstName(appleUser.getFirstName());
+      user.setLastName(appleUser.getLastName());
+      AbstractJsonUserAttributeMapper.storeUserProfileForMapper(
+          user, appleUser.getProfile(), getConfig().getAlias());
     }
 
-    public BrokeredIdentityContext getFederatedIdentity(String userData, String response) throws JsonProcessingException {
-        BrokeredIdentityContext user = AppleIdentityProvider.this.getFederatedIdentity(response);
+    return user;
+  }
 
-        if (userData != null) {
-            AppleUserRepresentation appleUser = parseUser(userData);
-            user.setFirstName(appleUser.getFirstName());
-            user.setLastName(appleUser.getLastName());
-            AbstractJsonUserAttributeMapper.storeUserProfileForMapper(user, appleUser.getProfile(), getConfig().getAlias());
-        }
+  @Override
+  public JsonWebToken validateToken(String encodedToken) {
+    return super.validateToken(encodedToken, true);
+  }
 
-        return user;
+  public SimpleHttp generateTokenRequest(
+      String authorizationCode, String clientId, String redirectUri) {
+    VaultStringSecret clientSecret = session.vault().getStringSecret(getConfig().getClientSecret());
+    return SimpleHttp.doPost(getConfig().getTokenUrl(), session)
+        .param(OAUTH2_PARAMETER_CODE, authorizationCode)
+        .param(OAUTH2_PARAMETER_REDIRECT_URI, redirectUri)
+        .param(OAUTH2_PARAMETER_GRANT_TYPE, OAUTH2_GRANT_TYPE_AUTHORIZATION_CODE)
+        .param(OAUTH2_PARAMETER_CLIENT_ID, clientId)
+        .param(
+            OAUTH2_PARAMETER_CLIENT_SECRET,
+            clientSecret.get().orElse(getConfig().getClientSecret()));
+  }
+
+  private String generateJWS(String p8Content, String keyId, String teamId, String clientId) {
+    try {
+      KeyFactory kf = KeyFactory.getInstance("ECDSA");
+
+      PKCS8EncodedKeySpec keySpecPKCS8 =
+          new PKCS8EncodedKeySpec(
+              Base64.decode(p8Content.replaceAll("-----[^-]+-----", "").replaceAll("\\s+", "")));
+      PrivateKey privateKey = kf.generatePrivate(keySpecPKCS8);
+      KeyWrapper keyWrapper = new KeyWrapper();
+      keyWrapper.setAlgorithm("ES256");
+      keyWrapper.setPrivateKey(privateKey);
+      keyWrapper.setKid(keyId);
+
+      return new JWSBuilder()
+          .jsonContent(generateClientToken(teamId, clientId))
+          .sign(new ServerECDSASignatureSignerContext(keyWrapper));
+    } catch (Exception e) {
+      throw new IdentityBrokerException("Unable to generate Apple client secret JWT", e);
+    }
+  }
+
+  private static String sanitizeForLog(String input) {
+    if (input == null) return null;
+    return input.replaceAll("[\r\n\t]", "_");
+  }
+
+  private boolean isValidSecret(String clientSecret) {
+    if (clientSecret != null && !clientSecret.isEmpty()) {
+      try {
+        JWSInput jws = new JWSInput(clientSecret);
+        JsonWebToken token = jws.readJsonContent(JsonWebToken.class);
+        return !token.isExpired();
+      } catch (JWSInputException e) {
+        logger.debug("Secret is not a valid JWS");
+      }
+    }
+    return false;
+  }
+
+  private JsonWebToken generateClientToken(String teamId, String clientId) {
+    JsonWebToken jwt = new JsonWebToken();
+    jwt.issuer(teamId);
+    jwt.subject(clientId);
+    jwt.audience(ISSUER);
+    jwt.iat((long) Time.currentTime());
+    jwt.exp(jwt.getIat() + CLIENT_SECRET_EXPIRY_SECONDS);
+    return jwt;
+  }
+
+  private void validateRedirectUri(String uri) {
+    try {
+      URI parsed = new URI(uri);
+      if (!parsed.isAbsolute()) {
+        throw new ErrorResponseException(
+            OAuthErrorException.INVALID_REQUEST,
+            "app_redirect_uri must be an absolute URI",
+            Response.Status.BAD_REQUEST);
+      }
+      String scheme = parsed.getScheme().toLowerCase();
+      if (!scheme.equals("https") && !scheme.equals("http")) {
+        throw new ErrorResponseException(
+            OAuthErrorException.INVALID_REQUEST,
+            "app_redirect_uri scheme not allowed",
+            Response.Status.BAD_REQUEST);
+      }
+    } catch (URISyntaxException e) {
+      throw new ErrorResponseException(
+          OAuthErrorException.INVALID_REQUEST,
+          "app_redirect_uri is not a valid URI",
+          Response.Status.BAD_REQUEST);
+    }
+  }
+
+  private BrokeredIdentityContext exchangeAuthorizationCode(
+      String authorizationCode, String userJson, String appIdentifier, String appRedirectUri) {
+    String clientId =
+        appIdentifier != null && !appIdentifier.isBlank()
+            ? appIdentifier
+            : getConfig().getClientId();
+    if (appRedirectUri != null) {
+      validateRedirectUri(appRedirectUri);
+    }
+    String redirectUri =
+        appRedirectUri != null
+            ? appRedirectUri
+            : Urls.identityProviderAuthnResponse(
+                    session.getContext().getUri().getBaseUri(),
+                    getConfig().getAlias(),
+                    session.getContext().getRealm().getName())
+                .toString();
+    logger.debugf(
+        "[app=%s] Exchanging Apple authorization code, redirectUri=%s", clientId, redirectUri);
+    try {
+      prepareClientSecret(clientId);
+      BrokeredIdentityContext context =
+          sendTokenRequest(authorizationCode, clientId, userJson, null, redirectUri);
+      if (context == null) {
+        logger.warnf("[app=%s] Authorization code exchange returned no identity context", clientId);
+      }
+      return context;
+    } catch (IOException e) {
+      logger.warnf(e, "[app=%s] Error exchanging Apple authorization code", clientId);
+      return null;
+    }
+  }
+
+  private BrokeredIdentityContext handleUserJson(BrokeredIdentityContext context, String userJson) {
+    try {
+      AppleUserRepresentation appleUser = parseUser(userJson);
+      if (appleUser.getFirstName() != null
+          && (context.getFirstName() == null || context.getFirstName().isBlank())) {
+        context.setFirstName(appleUser.getFirstName());
+      }
+      if (appleUser.getLastName() != null
+          && (context.getLastName() == null || context.getLastName().isBlank())) {
+        context.setLastName(appleUser.getLastName());
+      }
+      if (appleUser.getEmail() != null
+          && (context.getEmail() == null || context.getEmail().isBlank())) {
+        context.setEmail(appleUser.getEmail());
+      }
+    } catch (Exception e) {
+      logger.debug("Failed to handle user JSON from Apple", e);
+    }
+    return context;
+  }
+
+  private AppleUserRepresentation parseUser(String userJson) throws JsonProcessingException {
+    JsonNode profile = mapper.readTree(userJson);
+    JsonNode nameNode = profile.get("name");
+    AppleUserRepresentation appleUser = new AppleUserRepresentation();
+    appleUser.setProfile(profile);
+    if (nameNode != null) {
+      JsonNode firstNameNode = nameNode.get("firstName");
+      if (firstNameNode != null) {
+        appleUser.setFirstName(firstNameNode.asText());
+      }
+      JsonNode lastNameNode = nameNode.get("lastName");
+      if (lastNameNode != null) {
+        appleUser.setLastName(lastNameNode.asText());
+      }
+    }
+    JsonNode emailNode = profile.get("email");
+    if (emailNode != null) {
+      appleUser.setEmail(emailNode.asText());
     }
 
-    @Override
-    public JsonWebToken validateToken(String encodedToken) {
-        return super.validateToken(encodedToken, true);
-    }
-
-    public SimpleHttp generateTokenRequest(String authorizationCode, String clientId, String redirectUri) {
-        VaultStringSecret clientSecret = session.vault().getStringSecret(getConfig().getClientSecret());
-        return SimpleHttp.doPost(getConfig().getTokenUrl(), session)
-                         .param(OAUTH2_PARAMETER_CODE, authorizationCode)
-                         .param(OAUTH2_PARAMETER_REDIRECT_URI, redirectUri)
-                         .param(OAUTH2_PARAMETER_GRANT_TYPE, OAUTH2_GRANT_TYPE_AUTHORIZATION_CODE)
-                         .param(OAUTH2_PARAMETER_CLIENT_ID, clientId)
-                         .param(OAUTH2_PARAMETER_CLIENT_SECRET, clientSecret.get().orElse(getConfig().getClientSecret()));
-    }
-
-    private String generateJWS(String p8Content, String keyId, String teamId, String clientId) {
-        try {
-            KeyFactory kf = KeyFactory.getInstance("ECDSA");
-
-            PKCS8EncodedKeySpec keySpecPKCS8 = new PKCS8EncodedKeySpec(Base64.decode(
-                    p8Content
-                            .replaceAll("-----[^-]+-----", "")
-                            .replaceAll("\\s+", "")
-            ));
-            PrivateKey privateKey = kf.generatePrivate(keySpecPKCS8);
-            KeyWrapper keyWrapper = new KeyWrapper();
-            keyWrapper.setAlgorithm("ES256");
-            keyWrapper.setPrivateKey(privateKey);
-            keyWrapper.setKid(keyId);
-
-            return new JWSBuilder()
-                    .jsonContent(generateClientToken(teamId, clientId))
-                    .sign(new ServerECDSASignatureSignerContext(keyWrapper));
-        } catch (Exception e) {
-            throw new IdentityBrokerException("Unable to generate Apple client secret JWT", e);
-        }
-    }
-
-    private static String sanitizeForLog(String input) {
-        if (input == null) return null;
-        return input.replaceAll("[\r\n\t]", "_");
-    }
-
-    private boolean isValidSecret(String clientSecret) {
-        if (clientSecret != null && !clientSecret.isEmpty()) {
-            try {
-                JWSInput jws = new JWSInput(clientSecret);
-                JsonWebToken token = jws.readJsonContent(JsonWebToken.class);
-                return !token.isExpired();
-            } catch (JWSInputException e) {
-                logger.debug("Secret is not a valid JWS");
-            }
-        }
-        return false;
-    }
-
-    private JsonWebToken generateClientToken(String teamId, String clientId) {
-        JsonWebToken jwt = new JsonWebToken();
-        jwt.issuer(teamId);
-        jwt.subject(clientId);
-        jwt.audience(ISSUER);
-        jwt.iat((long) Time.currentTime());
-        jwt.exp(jwt.getIat() + CLIENT_SECRET_EXPIRY_SECONDS);
-        return jwt;
-    }
-
-    private void validateRedirectUri(String uri) {
-        try {
-            URI parsed = new URI(uri);
-            if (!parsed.isAbsolute()) {
-                throw new ErrorResponseException(OAuthErrorException.INVALID_REQUEST, "app_redirect_uri must be an absolute URI", Response.Status.BAD_REQUEST);
-            }
-            String scheme = parsed.getScheme().toLowerCase();
-            if (!scheme.equals("https") && !scheme.equals("http")) {
-                throw new ErrorResponseException(OAuthErrorException.INVALID_REQUEST, "app_redirect_uri scheme not allowed", Response.Status.BAD_REQUEST);
-            }
-        } catch (URISyntaxException e) {
-            throw new ErrorResponseException(OAuthErrorException.INVALID_REQUEST, "app_redirect_uri is not a valid URI", Response.Status.BAD_REQUEST);
-        }
-    }
-
-    private BrokeredIdentityContext exchangeAuthorizationCode(String authorizationCode, String userJson, String appIdentifier, String appRedirectUri) {
-        String clientId = appIdentifier != null && !appIdentifier.isBlank() ? appIdentifier : getConfig().getClientId();
-        if (appRedirectUri != null) {
-            validateRedirectUri(appRedirectUri);
-        }
-        String redirectUri = appRedirectUri != null ? appRedirectUri : Urls.identityProviderAuthnResponse(session.getContext().getUri().getBaseUri(), getConfig().getAlias(), session.getContext().getRealm().getName()).toString();
-        logger.debugf("[app=%s] Exchanging Apple authorization code, redirectUri=%s", clientId, redirectUri);
-        try {
-            prepareClientSecret(clientId);
-            BrokeredIdentityContext context = sendTokenRequest(authorizationCode, clientId, userJson, null, redirectUri);
-            if (context == null) {
-                logger.warnf("[app=%s] Authorization code exchange returned no identity context", clientId);
-            }
-            return context;
-        } catch (IOException e) {
-            logger.warnf(e, "[app=%s] Error exchanging Apple authorization code", clientId);
-            return null;
-        }
-    }
-
-    private BrokeredIdentityContext handleUserJson(BrokeredIdentityContext context, String userJson) {
-        try {
-            AppleUserRepresentation appleUser = parseUser(userJson);
-            if (appleUser.getFirstName() != null && (context.getFirstName() == null || context.getFirstName().isBlank())) {
-                context.setFirstName(appleUser.getFirstName());
-            }
-            if (appleUser.getLastName() != null && (context.getLastName() == null || context.getLastName().isBlank())) {
-                context.setLastName(appleUser.getLastName());
-            }
-            if(appleUser.getEmail() != null && (context.getEmail() == null || context.getEmail().isBlank())) {
-                context.setEmail(appleUser.getEmail());
-            }
-        } catch (Exception e) {
-            logger.debug("Failed to handle user JSON from Apple", e);
-        }
-        return context;
-    }
-
-    private AppleUserRepresentation parseUser(String userJson) throws JsonProcessingException {
-        JsonNode profile = mapper.readTree(userJson);
-        JsonNode nameNode = profile.get("name");
-        AppleUserRepresentation appleUser = new AppleUserRepresentation();
-        appleUser.setProfile(profile);
-        if (nameNode != null) {
-            JsonNode firstNameNode = nameNode.get("firstName");
-            if (firstNameNode != null) {
-                appleUser.setFirstName(firstNameNode.asText());
-            }
-            JsonNode lastNameNode = nameNode.get("lastName");
-            if (lastNameNode != null) {
-                appleUser.setLastName(lastNameNode.asText());
-            }
-        }
-        JsonNode emailNode = profile.get("email");
-        if (emailNode != null) {
-            appleUser.setEmail(emailNode.asText());
-        }
-
-        return appleUser;
-    }
+    return appleUser;
+  }
 }

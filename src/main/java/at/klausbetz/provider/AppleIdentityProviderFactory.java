@@ -1,5 +1,6 @@
 package at.klausbetz.provider;
 
+import java.util.List;
 import org.keycloak.broker.provider.AbstractIdentityProviderFactory;
 import org.keycloak.broker.social.SocialIdentityProviderFactory;
 import org.keycloak.models.IdentityProviderModel;
@@ -7,39 +8,61 @@ import org.keycloak.models.KeycloakSession;
 import org.keycloak.provider.ProviderConfigProperty;
 import org.keycloak.provider.ProviderConfigurationBuilder;
 
-import java.util.List;
+public class AppleIdentityProviderFactory
+    extends AbstractIdentityProviderFactory<AppleIdentityProvider>
+    implements SocialIdentityProviderFactory<AppleIdentityProvider> {
 
-public class AppleIdentityProviderFactory extends AbstractIdentityProviderFactory<AppleIdentityProvider> implements SocialIdentityProviderFactory<AppleIdentityProvider> {
+  public static final String PROVIDER_ID = "apple";
 
-    public static final String PROVIDER_ID = "apple";
+  @Override
+  public String getName() {
+    return "Apple";
+  }
 
-    @Override
-    public String getName() {
-        return "Apple";
-    }
+  @Override
+  public AppleIdentityProvider create(KeycloakSession session, IdentityProviderModel model) {
+    return new AppleIdentityProvider(session, new AppleIdentityProviderConfig(model));
+  }
 
-    @Override
-    public AppleIdentityProvider create(KeycloakSession session, IdentityProviderModel model) {
-        return new AppleIdentityProvider(session, new AppleIdentityProviderConfig(model));
-    }
+  @Override
+  public AppleIdentityProviderConfig createConfig() {
+    return new AppleIdentityProviderConfig();
+  }
 
-    @Override
-    public AppleIdentityProviderConfig createConfig() {
-        return new AppleIdentityProviderConfig();
-    }
+  @Override
+  public String getId() {
+    return PROVIDER_ID;
+  }
 
-    @Override
-    public String getId() {
-        return PROVIDER_ID;
-    }
-
-    @Override
-    public List<ProviderConfigProperty> getConfigProperties() {
-        return ProviderConfigurationBuilder.create()
-                                           .property().name("displayName").label("Display name").helpText("Text that is shown on the login page. Defaults to 'Sign in with Apple'").type(ProviderConfigProperty.STRING_TYPE).add()
-                                           .property().name("teamId").label("Team ID").helpText("Your 10-character Team ID obtained from your Apple developer account.").type(ProviderConfigProperty.STRING_TYPE).add()
-                                           .property().name("keyId").label("Key ID").helpText("A 10-character key identifier obtained from your Apple developer account.").type(ProviderConfigProperty.STRING_TYPE).add()
-                                           .property().name("tokenExchangeAccountLinkingEnabled").label("Token-Exchange links existing accounts").helpText("If enabled, the token-exchange can link an existing user to the given Apple Login (similar to first broker login flow).").type(ProviderConfigProperty.BOOLEAN_TYPE).defaultValue(false).add()
-                                           .build();
-    }
+  @Override
+  public List<ProviderConfigProperty> getConfigProperties() {
+    return ProviderConfigurationBuilder.create()
+        .property()
+        .name("displayName")
+        .label("Display name")
+        .helpText("Text that is shown on the login page. Defaults to 'Sign in with Apple'")
+        .type(ProviderConfigProperty.STRING_TYPE)
+        .add()
+        .property()
+        .name("teamId")
+        .label("Team ID")
+        .helpText("Your 10-character Team ID obtained from your Apple developer account.")
+        .type(ProviderConfigProperty.STRING_TYPE)
+        .add()
+        .property()
+        .name("keyId")
+        .label("Key ID")
+        .helpText("A 10-character key identifier obtained from your Apple developer account.")
+        .type(ProviderConfigProperty.STRING_TYPE)
+        .add()
+        .property()
+        .name("tokenExchangeAccountLinkingEnabled")
+        .label("Token-Exchange links existing accounts")
+        .helpText(
+            "If enabled, the token-exchange can link an existing user to the given Apple Login (similar to first broker login flow).")
+        .type(ProviderConfigProperty.BOOLEAN_TYPE)
+        .defaultValue(false)
+        .add()
+        .build();
+  }
 }

@@ -1,6 +1,7 @@
 plugins {
     id 'java'
     id 'maven-publish'
+    id 'com.diffplug.spotless' version '6.25.0'
 }
 
 group 'at.klausbetz'
@@ -45,6 +46,15 @@ publishing {
         maven(MavenPublication) {
             from components.java
         }
+    }
+}
+
+spotless {
+    java {
+        googleJavaFormat()
+        removeUnusedImports()
+        trimTrailingWhitespace()
+        endWithNewline()
     }
 }
 
