@@ -1,0 +1,12 @@
+version: 2
+updates:
+  # Keep GitHub Actions up to date.
+  # Gradle dependencies are intentionally excluded until the multi-version KC
+  # compatibility matrix is in place — bumping keycloakVersion blindly could
+  # silently break compatibility with older KC deployments.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    labels:
+      - "dependencies"
