@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Minimal POM required by the Keycloak test framework's Maven workspace resolver.
+  The actual build is driven by build.gradle. This pom.xml is NOT used for
+  building, publishing, or dependency management.
+-->
+<project
+    xmlns="http://maven.apache.org/POM/4.0.0"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>at.klausbetz</groupId>
+  <artifactId>apple-identity-provider-keycloak</artifactId>
+  <version>1.17.0</version>
+  <packaging>jar</packaging>
+</project>
