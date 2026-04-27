@@ -1,6 +1,10 @@
 name: CI
 
-on: [push]
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
 
 jobs:
   build:
@@ -21,6 +25,8 @@ jobs:
         run: ./gradlew spotlessCheck
       - name: Test
         run: ./gradlew test
+      - name: Coverage gate
+        run: ./gradlew jacocoTestReport jacocoTestCoverageVerification
       - name: Build JAR archive
         run: ./gradlew jar
       - uses: actions/upload-artifact@v4
