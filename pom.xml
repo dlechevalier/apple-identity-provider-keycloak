@@ -11,6 +11,6 @@
   <modelVersion>4.0.0</modelVersion>
   <groupId>at.klausbetz</groupId>
   <artifactId>apple-identity-provider-keycloak</artifactId>
-  <version>1.17.0</version>
+  <version>2.0.0</version>
   <packaging>jar</packaging>
 </project>

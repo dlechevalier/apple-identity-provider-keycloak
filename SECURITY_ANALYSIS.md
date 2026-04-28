@@ -1,6 +1,6 @@
 # Security & Code Quality Analysis — Apple Identity Provider SPI
 
-> Analysis performed on version `1.17.0` targeting Keycloak `26.5.0`, Java 21.
+> Analysis performed on version `2.0.0` (fork of klausbetz/apple-identity-provider-keycloak `1.17.0`) targeting Keycloak `26.6.1`, Java 21.
 > Last updated: 2026-04-28. Items marked **✅ Fixed** have been resolved in the current codebase.
 
 ---

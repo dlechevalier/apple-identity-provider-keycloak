@@ -38,19 +38,21 @@ See [COMPATIBILITY.md](COMPATIBILITY.md) for the detailed, up-to-date compatibil
 Versions from KC 26.6.0 onwards are verified automatically by the integration test CI on every PR.
 Older versions are verified manually.
 
-**Quick reference for the current SPI version (1.17.0):**
+**Which SPI version to use:**
 
-| Keycloak Version | Status |
-|---|---|
-| `>= 26.6.0` | ✅ CI-verified (unit + integration tests) on every PR |
-| `26.5.0 – 26.5.7` | ✅ Unit tests pass (all patches verified) |
-| `< 26.5.0` | ❌ Broken — `UserAuthenticationIdentityProvider` not in KC API |
+| Keycloak Version | SPI Version | Notes |
+|---|---|---|
+| `>= 26.5.0` | `2.0.0` | ✅ This fork — CI-verified on KC 26.6+ |
+| `>= 26.5.0` | `1.17.0` | Last upstream klausbetz release |
+| `26.3.0 – 26.4.x` | `1.15.0 – 1.16.0` | |
+| `25.0.0 – 26.2.x` | `1.13.0 – 1.14.0` | |
+| `23.0.0 – 24.0.x` | `1.9.0 – 1.12.0` | |
+| `22.0.0 – 22.0.x` | `1.7.0 – 1.8.0` | |
+| `21.0.0 – 21.1.x` | `1.5.0 – 1.6.0` | :information_source: Admin UI does not display SPI properties |
+| `20.0.0 – 20.0.x` | `1.3.0 – 1.4.1` | :information_source: Old Admin UI required |
+| `17.0.0 – 19.0.x` | `1.2.0` | :information_source: Old Admin UI required |
 
-:information_source: In Keycloak `v21.X.Y` this extension cannot be used effectively, since the additional properties such
-as `Team ID`, `Key ID`
-and so on are not displayed in the Admin UI.   
-However, you can still use this extension with Keycloak `v21.X.Y` when you use some sort of external configuration tools like terraform or
-[keycloak-config-cli](https://github.com/adorsys/keycloak-config-cli) where you do not rely on Keycloak's UI.
+See [COMPATIBILITY.md](COMPATIBILITY.md) for the full per-patch verification details.
 
 :information_source: For Keycloak `v19` and `v20` you have to switch to the old Admin UI to use this extension (see this
 paper [Keycloak 19.0.0 release](https://www.keycloak.org/2022/07/keycloak-1900-released.html#_new_admin_console_is_now_the_default_console))

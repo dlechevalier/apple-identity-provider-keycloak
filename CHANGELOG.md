@@ -3,13 +3,15 @@
 All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
-## [Unreleased]
-### Changed
-- Bump Keycloak dependencies to 26.5.0
-- Bump to Java 21
+## [2.0.0] - 2026-04-28
 
-### Fixed
-- Set email from `userJson` when email is missing in the ID token
+> **Minimum Keycloak version raised to 26.5.0.**
+> This version uses `UserAuthenticationIdentityProvider.AuthenticationCallback`,
+> introduced in KC 26.5.0. If you are on KC < 26.5, stay on 1.17.0.
+
+### Breaking
+- Minimum supported Keycloak version is now **26.5.0**
+  (uses `UserAuthenticationIdentityProvider.AuthenticationCallback` from KC 26.5 SPI)
 
 ### Security
 - Auto-linking of existing accounts by email match now **disabled by default**
@@ -28,8 +30,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ### Added
 - Unit tests covering all major flows: token exchange, user parsing, auto-linking, mappers, config, endpoint
 - Tests for security fixes: redirect URI validation, JWS failure, auto-linking default
+- Integration tests using the KC embedded test framework (KC 26.6.0+)
+- Automated CI compatibility matrix (KC 26.6.0+)
+- JaCoCo coverage gate (65% line and branch)
+- Spotless / Google Java Format enforcement
+- SECURITY.md, CONTRIBUTING.md, COMPATIBILITY.md
 
 ### Changed
+- Bump Keycloak dependencies to 26.6.1 (test/compile scope)
+- Bump to Java 21
 - Token expiry magic number `86400 * 180` replaced by named constant `CLIENT_SECRET_EXPIRY_SECONDS`
 - Swallowed exception in `handleUserJson` now logged at DEBUG level
 
