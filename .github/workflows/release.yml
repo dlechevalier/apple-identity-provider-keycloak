@@ -4,11 +4,15 @@ on:
   push:
     tags:
       - "**"
+  workflow_dispatch:
 
 jobs:
   create-release:
     name: "Build & release"
     runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
 
     steps:
       - name: "Checkout repository"
@@ -20,6 +24,41 @@ jobs:
           java-version: "21"
           distribution: "temurin"
           cache: gradle
+
+      - name: "Read version from build.gradle (workflow_dispatch only)"
+        if: github.event_name == 'workflow_dispatch'
+        id: version
+        run: |
+          VERSION=$(grep "^version " build.gradle | sed "s/version '//;s/'//")
+          echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
+          echo "Releasing version $VERSION"
+
+      - name: "Check tag does not already exist (workflow_dispatch only)"
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          VERSION=${{ steps.version.outputs.VERSION }}
+          if git ls-remote --tags origin | grep -q "refs/tags/v${VERSION}$"; then
+            echo "Tag v${VERSION} already exists — bump the version in build.gradle first."
+            exit 1
+          fi
+
+      - name: "Create and push tag (workflow_dispatch only)"
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          VERSION=${{ steps.version.outputs.VERSION }}
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "v${VERSION}" -m "Release ${VERSION}"
+          git push origin "v${VERSION}"
+
+      - name: "Resolve tag name"
+        id: tag
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "TAG=v${{ steps.version.outputs.VERSION }}" >> $GITHUB_OUTPUT
+          else
+            echo "TAG=${GITHUB_REF_NAME}" >> $GITHUB_OUTPUT
+          fi
 
       - name: "Build JAR"
         run: sh gradlew jar
@@ -45,6 +84,6 @@ jobs:
           path: tmp-artifacts
 
       - name: "Create release"
-        run: gh release create ${GITHUB_REF_NAME} tmp-artifacts/* --generate-notes --verify-tag
+        run: gh release create ${{ steps.tag.outputs.TAG }} tmp-artifacts/* --generate-notes --verify-tag
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
