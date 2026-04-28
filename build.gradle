@@ -10,7 +10,9 @@ version '1.17.0'
 java.sourceCompatibility = JavaVersion.VERSION_21
 
 ext {
-    keycloakVersion = '26.5.0'
+    // Override with -PkcVersion=26.7.0 to test against a different KC release.
+    // Note: integration tests require KC 26.6.0+ (dependencyCurrentProject() API).
+    keycloakVersion = project.hasProperty('kcVersion') ? project.getProperty('kcVersion') : '26.6.1'
 }
 
 repositories {
@@ -83,6 +85,51 @@ spotless {
         trimTrailingWhitespace()
         endWithNewline()
     }
+}
+
+// --- Integration tests (Keycloak embedded test framework) ---
+sourceSets {
+    integrationTest {
+        java.srcDir 'src/integrationTest/java'
+        resources.srcDir 'src/integrationTest/resources'
+        compileClasspath += sourceSets.main.output
+        runtimeClasspath += output + compileClasspath
+    }
+}
+
+configurations {
+    integrationTestImplementation.extendsFrom(configurations.testImplementation)
+    integrationTestImplementation.extendsFrom(configurations.implementation)
+    integrationTestRuntimeOnly.extendsFrom(configurations.testRuntimeOnly)
+}
+
+dependencies {
+    integrationTestImplementation platform("org.keycloak.testframework:keycloak-test-framework-bom:$keycloakVersion")
+    integrationTestImplementation "org.keycloak.testframework:keycloak-test-framework-core"
+    integrationTestImplementation "org.assertj:assertj-core:3.25.3"
+}
+
+// The KC test framework resolves the current project from target/classes/ (Maven layout).
+def copyMainOutputToMavenTarget = tasks.register("copyMainOutputToMavenTarget", Copy) {
+    description = "Copy main compiled output to target/classes for KC test framework compatibility"
+    from(sourceSets.main.output)
+    into(layout.projectDirectory.dir("target/classes"))
+    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+    dependsOn(tasks.named("classes"))
+}
+
+tasks.register("integrationTest", Test) {
+    group = "verification"
+    description = "Run integration tests using the embedded Keycloak test framework"
+    testClassesDirs = sourceSets.integrationTest.output.classesDirs
+    classpath = sourceSets.integrationTest.runtimeClasspath
+    useJUnitPlatform()
+    jvmArgs(
+        "-Djava.util.logging.manager=org.jboss.logmanager.LogManager",
+        "-Djava.util.concurrent.ForkJoinPool.common.threadFactory=io.quarkus.bootstrap.forkjoin.QuarkusForkJoinWorkerThreadFactory"
+    )
+    systemProperty "kc.test.server", "embedded"
+    dependsOn(copyMainOutputToMavenTarget)
 }
 
 // run 'gradle wrapper' to regenerate gradle/ folder

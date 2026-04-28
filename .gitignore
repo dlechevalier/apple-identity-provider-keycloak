@@ -1,6 +1,7 @@
 .gradle
 .idea
 build
+target
 bin
 .DS_Store
 .java-version
