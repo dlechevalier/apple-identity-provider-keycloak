@@ -42,9 +42,9 @@ Older versions are verified manually.
 
 | Keycloak Version | Status |
 |---|---|
-| `>= 26.6.0` | CI-verified on every PR |
-| `22.0.x – 26.5.x` | Manually verified — see COMPATIBILITY.md |
-| `< 22.0.0` | Not supported (requires KC 22+ OIDC broker API) |
+| `>= 26.6.0` | ✅ CI-verified (unit + integration tests) on every PR |
+| `26.5.0 – 26.5.7` | ✅ Unit tests pass (all patches verified) |
+| `< 26.5.0` | ❌ Broken — `UserAuthenticationIdentityProvider` not in KC API |
 
 :information_source: In Keycloak `v21.X.Y` this extension cannot be used effectively, since the additional properties such
 as `Team ID`, `Key ID`
