@@ -1,6 +1,7 @@
 # Security & Code Quality Analysis — Apple Identity Provider SPI
 
 > Analysis performed on version `1.17.0` targeting Keycloak `26.5.0`, Java 21.
+> Last updated: 2026-04-28. Items marked **✅ Fixed** have been resolved in the current codebase.
 
 ---
 
@@ -16,7 +17,7 @@
 
 ## 1. Security Vulnerabilities
 
-### 🔴 Critical — Account Takeover via Email-Based Auto-Linking
+### 🔴 Critical — Account Takeover via Email-Based Auto-Linking — ⚠️ Partially mitigated
 
 **File:** `src/main/java/at/klausbetz/provider/AppleIdentityProvider.java`, lines 107–128
 
@@ -31,147 +32,91 @@ this.session.users().addFederatedIdentity(realm, existing, newLink);
 
 This is a well-known OAuth attack pattern known as the "pre-authentication account linking attack". See CVE-2023-39522 and CVE-2022-31074 for similar vulnerabilities in other OAuth providers.
 
-**Aggravating factor:** `tokenExchangeAccountLinkingEnabled` defaults to `true` in `AppleIdentityProviderFactory.java`.
+**Mitigation applied:** `tokenExchangeAccountLinkingEnabled` now **defaults to `false`** in `AppleIdentityProviderFactory.java`. The feature remains available but must be explicitly enabled by the operator. See [SECURITY.md](SECURITY.md) for deployment guidance.
 
 ---
 
-### 🔴 Critical — Log Injection via Unsanitized User-Controlled Input
+### ~~🔴 Critical~~ — Log Injection via Unsanitized User-Controlled Input — ✅ Fixed
 
-**File:** `src/main/java/at/klausbetz/provider/AppleIdentityProviderEndpoint.java`, line 68
+**File:** `src/main/java/at/klausbetz/provider/AppleIdentityProviderEndpoint.java`
 
-```java
-logger.warn(error + " for broker login " + appleIdentityProvider.getConfig().getProviderId());
-```
+The `error` `@FormParam` and the Apple response body were concatenated into log messages without sanitization (CWE-117 — Improper Output Neutralization for Logs).
 
-The `error` parameter is a `@FormParam` fully controlled by the user, and is directly concatenated into the log message without any sanitisation. An attacker can inject newline characters to forge log entries (CWE-117 — Improper Output Neutralization for Logs).
-
-The same issue exists in `AppleIdentityProvider.java` line 190, where the raw Apple response body is logged:
-
-```java
-logger.warn("Error response from apple: status=" + response.getStatus() + ", body=" + response.asString() + " ...");
-```
+**Fix:** A `sanitizeForLog()` helper (replaces `\r`, `\n`, `\t` with `_`) is now applied to all user-controlled and external inputs before logging, in both `AppleIdentityProviderEndpoint` and `AppleIdentityProvider`.
 
 ---
 
-### 🟠 High — Race Condition (TOCTOU) on Client Secret Generation
+### ~~🟠 High~~ — Race Condition (TOCTOU) on Client Secret Generation — ✅ Fixed
 
-**File:** `src/main/java/at/klausbetz/provider/AppleIdentityProvider.java`, lines 175–183
+**File:** `src/main/java/at/klausbetz/provider/AppleIdentityProvider.java`
 
-```java
-public void prepareClientSecret(String clientId) {
-    if (!isValidSecret(getConfig().getClientSecret())) {
-        getConfig().setClientSecret(generateJWS(...));
-    }
-}
-```
+The check-then-act sequence in `prepareClientSecret` was not synchronized. Under concurrent load, two threads could both observe the secret as expired and generate a new JWS, with one overwriting the other.
 
-There is no synchronization around the check-then-act sequence. Under concurrent load, two threads may both observe the secret as expired, both generate a new JWS, and one will overwrite the other. In the best case one request fails; in the worst case an inconsistent secret is persisted.
+**Fix:** `prepareClientSecret` is now declared `synchronized`.
 
 ---
 
-### 🟠 High — Silent Key Generation Failure Propagates Null as Client Secret
+### ~~🟠 High~~ — Silent Key Generation Failure Propagates Null as Client Secret — ✅ Fixed
 
-**File:** `src/main/java/at/klausbetz/provider/AppleIdentityProvider.java`, lines 228–252
+**File:** `src/main/java/at/klausbetz/provider/AppleIdentityProvider.java`
 
-```java
-} catch (Exception e) {
-    logger.error("Unable to generate JWS", e);
-}
-return null; // ← null returned without throwing
-```
+`generateJWS` previously returned `null` on any error, propagating `null` silently as the client secret and producing a cryptic Apple-side failure.
 
-`generateJWS` returns `null` on any error. `prepareClientSecret` then calls `getConfig().setClientSecret(null)`. In `generateTokenRequest` (line 225):
-
-```java
-.param(OAUTH2_PARAMETER_CLIENT_SECRET, clientSecret.get().orElse(getConfig().getClientSecret()))
-```
-
-If the vault also fails to return a value, the token request to Apple is sent with `client_secret=null`, resulting in a cryptic Apple-side error instead of a clear server-side failure.
+**Fix:** `generateJWS` now throws `IdentityBrokerException("Unable to generate Apple client secret JWT")` on failure, surfacing the error immediately on the server side.
 
 ---
 
-### 🟠 High — Fragile Manual PEM Parsing; Private Key Material in Non-Zeroable String
+### 🟠 High — Fragile Manual PEM Parsing; Private Key Material in Non-Zeroable String — ⚠️ Partially fixed
 
-**File:** `src/main/java/at/klausbetz/provider/AppleIdentityProvider.java`, lines 232–238
+**File:** `src/main/java/at/klausbetz/provider/AppleIdentityProvider.java`
 
-```java
-PKCS8EncodedKeySpec keySpecPKCS8 = new PKCS8EncodedKeySpec(Base64.decode(
-    p8Content
-        .replace("-----BEGIN PRIVATE KEY-----", "")
-        .replace("-----END PRIVATE KEY-----", "")
-        .replace("\\n", "")
-        .replace(" ", "")
-));
-```
+**Partial fix applied:** PEM header/footer stripping now uses `replaceAll("-----[^-]+-----", "")` and `replaceAll("\\s+", "")`, which correctly handles CRLF line endings, bare newlines, and all whitespace variants.
 
-Several issues with this approach:
-
-- Does not handle `\r\n` line endings (Windows-style PEM files).
-- Literal `\n` characters (without a preceding backslash) are not stripped.
-- A partially attacker-controlled config value could inject malformed content and trigger a swallowed exception.
-- The private key is manipulated as an immutable Java `String` — it cannot be explicitly zeroed from memory after use (CWE-312 — Cleartext Storage of Sensitive Information).
-
-A proper PEM parser (e.g., from Bouncy Castle) should be used instead.
+**Still present:** The private key material is manipulated as an immutable Java `String` and cannot be explicitly zeroed from memory after use (CWE-312 — Cleartext Storage of Sensitive Information). A proper PEM parser (e.g., from Bouncy Castle) with a `char[]`/`byte[]` key representation would be the complete fix.
 
 ---
 
-### 🟡 Medium — Missing Redirect URI Validation
+### ~~🟡 Medium~~ — Missing Redirect URI Validation — ✅ Fixed
 
-**File:** `src/main/java/at/klausbetz/provider/AppleIdentityProvider.java`, line 279
+**File:** `src/main/java/at/klausbetz/provider/AppleIdentityProvider.java`
 
-```java
-String redirectUri = appRedirectUri != null ? appRedirectUri : Urls.identityProviderAuthnResponse(...);
-```
+`appRedirectUri` from the token exchange request was used without validation, potentially enabling open redirects.
 
-`appRedirectUri` comes directly from the `app_redirect_uri` token exchange request parameter with no validation against a list of allowed URIs. If Apple's server-side validation is misconfigured or bypassed, this could enable an open redirect or an authorization code leak.
+**Fix:** `validateRedirectUri()` now rejects non-absolute URIs and URIs with non-HTTP/HTTPS schemes (`ErrorResponseException` with 400 Bad Request).
 
 ---
 
-### 🟡 Medium — Internal Exception Details Exposed in Event
+### ~~🟡 Medium~~ — Internal Exception Details Exposed in Event — ✅ Fixed
 
-**File:** `src/main/java/at/klausbetz/provider/AppleIdentityProvider.java`, lines 169–170
+**File:** `src/main/java/at/klausbetz/provider/AppleIdentityProvider.java`
 
-```java
-event.detail(Details.REASON, "Unable to extract identity from identity token: " + e.getMessage());
-```
+Raw Java exception messages were included in Keycloak event details, potentially leaking internal implementation information via Admin APIs.
 
-The raw Java exception message is included in the Keycloak event, which may be exposed via Admin APIs. This can leak internal implementation details to attackers with admin access.
+**Fix:** Event details now use fixed generic strings (`"token validation failure"`, `"Failed to extract identity from token"`) with no exception message interpolation.
 
 ---
 
 ## 2. Logic Bug
 
-### Email Extraction Nested Inside `nameNode != null` Block
+### ~~Email Extraction Nested Inside `nameNode != null` Block~~ — ✅ Fixed
 
-**File:** `src/main/java/at/klausbetz/provider/AppleIdentityProvider.java`, lines 307–328
+**File:** `src/main/java/at/klausbetz/provider/AppleIdentityProvider.java`
 
-```java
-if (nameNode != null) {
-    // firstName, lastName...
-    JsonNode emailNode = profile.get("email"); // ← inside the nameNode block
-    if (emailNode != null) {
-        appleUser.setEmail(emailNode.asText());
-    }
-}
-```
+Email extraction was nested inside the `nameNode != null` block, silently ignoring the email when Apple sends `{"email": "foo@bar.com"}` without a `name` field.
 
-The email is only extracted when the `name` node is present. If Apple sends `{"email": "foo@bar.com"}` without a `name` field, the email is silently ignored. This bug is even acknowledged in `AppleIdentityProviderTest.java` as a "Known bug" but has never been fixed.
+**Fix:** `profile.get("email")` is now called unconditionally outside the `nameNode` block. The test `withEmailButNoName_emailIsParsed()` verifies this behaviour.
 
 ---
 
 ## 3. Code Quality
 
-### Exception Swallowing in `handleUserJson`
+### ~~Exception Swallowing in `handleUserJson`~~ — ✅ Fixed
 
-**File:** `src/main/java/at/klausbetz/provider/AppleIdentityProvider.java`, lines 301–303
+**File:** `src/main/java/at/klausbetz/provider/AppleIdentityProvider.java`
 
-```java
-} catch (Exception e) {
-    // do nothing
-}
-```
+All exceptions from `handleUserJson` were silently discarded.
 
-All exceptions from `handleUserJson` are silently discarded, including `NullPointerException` and programming errors. At minimum, the exception should be logged at debug level.
+**Fix:** The catch block now calls `logger.debug("Failed to handle user JSON from Apple", e)`, making failures visible in debug logs without disrupting the authentication flow.
 
 ---
 
@@ -189,27 +134,19 @@ The constructor mutates the shared config object with hardcoded values, silently
 
 ---
 
-### Magic Number for Token Expiry
+### ~~Magic Number for Token Expiry~~ — ✅ Fixed
 
-**File:** `src/main/java/at/klausbetz/provider/AppleIdentityProvider.java`, line 273
+**File:** `src/main/java/at/klausbetz/provider/AppleIdentityProvider.java`
 
-```java
-jwt.exp(jwt.getIat() + 86400 * 180);
-```
-
-`86400 * 180` (180 days in seconds) is a magic number with no explanation. A named constant such as `CLIENT_SECRET_EXPIRY_SECONDS` would make the intent clear and make the value easier to change.
+**Fix:** Replaced with the named constant `CLIENT_SECRET_EXPIRY_SECONDS = 86400L * 180` (180 days).
 
 ---
 
-### Manually URL-Encoded Scopes
+### ~~Manually URL-Encoded Scopes~~ — ✅ Fixed
 
-**File:** `src/main/java/at/klausbetz/provider/AppleIdentityProvider.java`, line 70
+**File:** `src/main/java/at/klausbetz/provider/AppleIdentityProvider.java`
 
-```java
-return "name%20email";
-```
-
-The space is manually percent-encoded. If the framework also encodes this value, the result would be `name%2520email` (double-encoding). Returning `"name email"` and letting the framework handle encoding is the safer approach.
+**Fix:** `getDefaultScopes()` now returns `"name email"` (unencoded), delegating percent-encoding to the framework and preventing double-encoding (`name%2520email`).
 
 ---
 
@@ -238,19 +175,19 @@ Tests use reflection extensively to access private methods (`parseUser`, `handle
 
 ## 5. Summary Table
 
-| Severity | Issue | File & Lines |
+| Severity | Issue | Status |
 |---|---|---|
-| 🔴 Critical | Account takeover via email-based auto-linking | `AppleIdentityProvider.java:107–128` |
-| 🔴 Critical | Log injection via unsanitized `@FormParam error` | `AppleIdentityProviderEndpoint.java:68` |
-| 🟠 High | TOCTOU race condition on `prepareClientSecret` | `AppleIdentityProvider.java:175–183` |
-| 🟠 High | Silent null propagated as client secret | `AppleIdentityProvider.java:228–252` |
-| 🟠 High | Fragile PEM parsing; private key in non-zeroable String | `AppleIdentityProvider.java:232–238` |
-| 🟡 Medium | Missing redirect URI validation | `AppleIdentityProvider.java:279` |
-| 🟡 Medium | Internal exception message exposed in event | `AppleIdentityProvider.java:169–170` |
-| 🐛 Bug | Email ignored when `name` node is absent | `AppleIdentityProvider.java:307–328` |
-| 🟢 Low | Exception swallowing in `handleUserJson` | `AppleIdentityProvider.java:301–303` |
-| 🟢 Low | Magic number `86400 * 180` | `AppleIdentityProvider.java:273` |
-| 🟢 Low | Manually URL-encoded scopes | `AppleIdentityProvider.java:70` |
-| 🟢 Low | Config mutation in constructor | `AppleIdentityProvider.java:54–60` |
-| 🟢 Low | Null used as error sentinel | `AppleIdentityProvider.java:186–198` |
-| 🟢 Low | Reflection in tests signals poor testability | `AppleIdentityProviderTest.java` |
+| 🔴 Critical | Account takeover via email-based auto-linking | ⚠️ Mitigated — disabled by default, opt-in |
+| 🔴 Critical | Log injection via unsanitized `@FormParam error` | ✅ Fixed |
+| 🟠 High | TOCTOU race condition on `prepareClientSecret` | ✅ Fixed |
+| 🟠 High | Silent null propagated as client secret | ✅ Fixed |
+| 🟠 High | Fragile PEM parsing; private key in non-zeroable String | ⚠️ Partially fixed (whitespace handling fixed; String in memory remains) |
+| 🟡 Medium | Missing redirect URI validation | ✅ Fixed |
+| 🟡 Medium | Internal exception message exposed in event | ✅ Fixed |
+| 🐛 Bug | Email ignored when `name` node is absent | ✅ Fixed |
+| 🟢 Low | Exception swallowing in `handleUserJson` | ✅ Fixed |
+| 🟢 Low | Magic number `86400 * 180` | ✅ Fixed |
+| 🟢 Low | Manually URL-encoded scopes | ✅ Fixed |
+| 🟢 Low | Config mutation in constructor | Open — design issue |
+| 🟢 Low | Null used as error sentinel in `sendTokenRequest` | Open — design issue |
+| 🟢 Low | Reflection in tests signals poor testability | Open — tests added, decomposition deferred |

@@ -65,10 +65,10 @@ regeneration.
 
 ### Log Injection via `error` Form Parameter
 
-The `error` parameter in the Apple callback endpoint is user-controlled and
-was historically logged without sanitization. This is tracked in
-[`SECURITY_ANALYSIS.md`](SECURITY_ANALYSIS.md) (CWE-117) and will be
-fixed in an upcoming release.
+The `error` parameter in the Apple callback endpoint is user-controlled.
+It is sanitized with `sanitizeForLog()` before any log call — newline, carriage
+return, and tab characters are replaced with `_` (fixed in 1.17.0, CWE-117).
+The original finding is documented in [`SECURITY_ANALYSIS.md`](SECURITY_ANALYSIS.md).
 
 ## Security Analysis
 

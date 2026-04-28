@@ -32,21 +32,19 @@ upgrade.
 
 ## Compatibility
 
-Since this package implements internal Keycloak SPIs, there's a chance this extension breaks with a new major version of Keycloak.  
-See the compatibility list below to find the version that suits your Keycloak version.
+Since this package implements internal Keycloak SPIs, there's a chance this extension breaks with a new major version of Keycloak.
 
-| Keycloak Version                        | Extension Version                 |
-|-----------------------------------------|-----------------------------------|
-| `< 17.0.0`                              | Not tested. Use at your own risk. |
-| `17.0.0 <= 19.0.3`                      | `1.2.0`                           |
-| `20.0.0 <= 20.0.5` :information_source: | `1.3.0 <= 1.4.1`                  |
-| `21.0.0 <= 21.0.2` :information_source: | `1.5.0`                           |
-| `21.1.0 <= 21.1.2` :information_source: | `1.6.0`                           |
-| `22.0.0 < 23.0.0`                       | `1.7.0 <= 1.8.0`                  |
-| `23.0.0 < 25.0.0`                       | `1.9.0 <= 1.12.0`                 |
-| `25.0.0 < 26.2.3`                       | `1.13.0 <= 1.14.0`                |
-| `26.3.0 < 26.4.7`                       | `1.15.0 <= 1.16.0`                |
-| `>= 26.5.0`                             | `>= 1.17.0`                       |
+See [COMPATIBILITY.md](COMPATIBILITY.md) for the detailed, up-to-date compatibility matrix.
+Versions from KC 26.6.0 onwards are verified automatically by the integration test CI on every PR.
+Older versions are verified manually.
+
+**Quick reference for the current SPI version (1.17.0):**
+
+| Keycloak Version | Status |
+|---|---|
+| `>= 26.6.0` | CI-verified on every PR |
+| `22.0.x – 26.5.x` | Manually verified — see COMPATIBILITY.md |
+| `< 22.0.0` | Not supported (requires KC 22+ OIDC broker API) |
 
 :information_source: In Keycloak `v21.X.Y` this extension cannot be used effectively, since the additional properties such
 as `Team ID`, `Key ID`
@@ -80,6 +78,28 @@ URLs in your Apple Developer Account.
 ## E-Mail configuration for private relay
 In case a user registers using a hidden email address from Apple (private relay) the sending mail address of your Keycloak realm needs to be whitelisted in the Apple Developer account. Otherwise users with private relay addresses will not receive any emails from Keycloak.
 [See this documentation](https://developer.apple.com/help/account/capabilities/configure-private-email-relay-service/)
+
+## Development
+
+### Running tests
+
+```bash
+# Unit tests + coverage gate (65% line & branch)
+./gradlew test jacocoTestCoverageVerification
+
+# Integration tests — requires KC 26.6.0+ embedded test framework
+./gradlew integrationTest
+
+# Against a specific KC version
+./gradlew integrationTest -PkcVersion=26.6.1
+```
+
+### Code style
+
+This project uses [Spotless](https://github.com/diffplug/spotless) with Google Java Format.
+Run `./gradlew spotlessApply` before committing.
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the full contribution guide.
 
 ## Troubleshooting
 
