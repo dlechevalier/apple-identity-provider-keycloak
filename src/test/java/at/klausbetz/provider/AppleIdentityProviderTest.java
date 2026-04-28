@@ -40,6 +40,7 @@ class AppleIdentityProviderTest {
   void setUp() {
     idpModel = new IdentityProviderModel();
     idpModel.setProviderId("apple");
+    idpModel.setEnabled(true); // KC 26.6+ validates enabled flag in BrokeredIdentityContext()
     config = new AppleIdentityProviderConfig(idpModel);
     config.setAlias("apple");
     config.setClientId("com.example.app");
